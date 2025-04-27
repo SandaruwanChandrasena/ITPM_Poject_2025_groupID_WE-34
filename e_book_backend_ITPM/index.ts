@@ -1,5 +1,1 @@
-console.log("Hello World")
-<<<<<<< HEAD
-=======
-
->>>>>>> main
+console.log("Hello World") 
