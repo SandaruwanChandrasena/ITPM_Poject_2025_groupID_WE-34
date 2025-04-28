@@ -317,3 +317,284 @@ export const getBooksPublicDetails: RequestHandler = async (req, res) => {
     path: "author",
     select: "name slug",
   });
+
+  if (!book)
+    return sendErrorResponse({
+      status: 404,
+      message: "Book not found!",
+      res,
+    });
+
+  const {
+    _id,
+    title,
+    cover,
+    author,
+    slug,
+    description,
+    genre,
+    language,
+    publishedAt,
+    publicationName,
+    price: { mrp, sale },
+    fileInfo,
+    averageRating,
+    status,
+  } = book;
+
+  res.json({
+    book: {
+      id: _id,
+      title,
+      genre,
+      status,
+      language,
+      slug,
+      description,
+      publicationName,
+      fileInfo,
+      publishedAt: publishedAt.toISOString().split("T")[0],
+      cover: cover?.url,
+      rating: averageRating?.toFixed(1),
+      price: {
+        mrp: (mrp / 100).toFixed(2), // $1 100C/100 = $1
+        sale: (sale / 100).toFixed(2), // 1.50
+      },
+      author: {
+        id: author._id,
+        name: author.name,
+        slug: author.slug,
+      },
+    },
+  });
+};
+
+export const getBookByGenre: RequestHandler = async (req, res) => {
+  const books = await BookModel.find({
+    genre: req.params.genre,
+    status: { $ne: "unpublished" },
+  }).limit(5);
+
+  books.map(formatBook);
+  res.json({
+    books: books.map(formatBook),
+  });
+};
+
+export const generateBookAccessUrl: RequestHandler = async (req, res) => {
+  const { slug } = req.params;
+
+  const book = await BookModel.findOne({ slug });
+  if (!book)
+    return sendErrorResponse({ res, message: "Book not found!", status: 404 });
+
+  const user = await UserModel.findOne({ _id: req.user.id, books: book._id });
+  if (!user)
+    return sendErrorResponse({ res, message: "User not found!", status: 404 });
+
+  const history = await HistoryModel.findOne({
+    reader: req.user.id,
+    book: book._id,
+  });
+
+  const settings: Settings = {
+    lastLocation: "",
+    highlights: [],
+  };
+
+  if (history) {
+    settings.highlights = history.highlights.map((h) => ({
+      fill: h.fill,
+      selection: h.selection,
+    }));
+    settings.lastLocation = history.lastLocation;
+  }
+
+  // generate access url if you are using aws
+  const bookGetCommand = new GetObjectCommand({
+    Bucket: process.env.AWS_PRIVATE_BUCKET,
+    Key: book.fileInfo.id,
+  });
+  const accessUrl = await getSignedUrl(s3Client, bookGetCommand);
+
+  res.json({ settings, url: accessUrl });
+};
+
+interface RecommendedBooks {
+  id: string;
+  title: string;
+  genre: string;
+  slug: string;
+  cover?: string;
+  rating?: string;
+  price: {
+    mrp: string;
+    sale: string;
+  };
+}
+
+export interface AggregationResult {
+  _id: ObjectId;
+  title: string;
+  genre: string;
+  price: {
+    mrp: number;
+    sale: number;
+    _id: ObjectId;
+  };
+  cover?: {
+    url: string;
+    id: string;
+    _id: ObjectId;
+  };
+  slug: string;
+  averageRating?: number;
+}
+
+export const getRecommendedBooks: RequestHandler = async (req, res) => {
+  const { bookId } = req.params;
+
+  if (!isValidObjectId(bookId)) {
+    return sendErrorResponse({ message: "Invalid book id!", res, status: 422 });
+  }
+
+  const book = await BookModel.findById(bookId);
+  if (!book) {
+    return sendErrorResponse({ message: "Book not found!", res, status: 404 });
+  }
+
+  const recommendedBooks = await BookModel.aggregate<AggregationResult>([
+    {
+      $match: {
+        genre: book.genre,
+        _id: { $ne: book._id },
+        status: { $ne: "unpublished" },
+      },
+    },
+    {
+      $lookup: {
+        localField: "_id",
+        from: "reviews",
+        foreignField: "book",
+        as: "reviews",
+      },
+    },
+    {
+      $addFields: {
+        averageRating: { $avg: "$reviews.rating" },
+      },
+    },
+    {
+      $sort: { averageRating: -1 },
+    },
+    {
+      $limit: 5,
+    },
+    {
+      $project: {
+        _id: 1,
+        title: 1,
+        slug: 1,
+        genre: 1,
+        price: 1,
+        cover: 1,
+        averageRating: 1,
+      },
+    },
+  ]);
+
+  const result = recommendedBooks.map<RecommendedBooks>(formatBook);
+
+  res.json(result);
+};
+
+export const getFeaturedBooks: RequestHandler = async (req, res) => {
+  const books = [
+    {
+      title: "Murder on the Orient Express",
+      slogan: "Unravel the mystery, ride the Orient Express!",
+      subtitle: "A thrilling journey through intrigue and deception.",
+      cover:
+        "https://ebook-public-data.s3.amazonaws.com/669e469bf094674648c4cac8-murder-on-the-orient-express.png",
+      slug: "murder-on-the-orient-express-669e469bf094674648c4cac8",
+    },
+    {
+      title: "To Kill a Mockingbird",
+      slogan: "Discover courage in a small town.",
+      subtitle: "A timeless tale of justice and compassion.",
+      cover:
+        "https://ebook-public-data.s3.amazonaws.com/669e469bf094674648c4cac9-to-kill-a-mockingbird.png",
+      slug: "to-kill-a-mockingbird-669e469bf094674648c4cac9",
+    },
+    {
+      title: "The Girl with the Dragon Tattoo",
+      slogan: "Uncover secrets with the girl and her tattoo.",
+      subtitle: "A gripping thriller of mystery and revenge.",
+      cover:
+        "https://ebook-public-data.s3.amazonaws.com/669e469bf094674648c4cad3-the-girl-with-the-dragon-tattoo.png",
+      slug: "the-girl-with-the-dragon-tattoo-669e469bf094674648c4cad3",
+    },
+    {
+      title: "The Hunger Games",
+      slogan: "Survive the games, ignite the rebellion.",
+      subtitle: "An epic adventure of survival and resilience.",
+      cover:
+        "https://ebook-public-data.s3.amazonaws.com/669e469bf094674648c4cad4-the-hunger-games.png",
+      slug: "the-hunger-games-669e469bf094674648c4cad4",
+    },
+  ];
+
+  res.json({ featuredBooks: books });
+};
+
+export const deleteBook: RequestHandler = async (req, res) => {
+  const { bookId } = req.params;
+  const { user } = req;
+  const deleteMethodAddedDate = 1722704247287;
+
+  if (!isValidObjectId(bookId)) {
+    return sendErrorResponse({ message: "Invalid book id!", res, status: 422 });
+  }
+
+  const book = await BookModel.findOne({ _id: bookId, author: user.authorId });
+  if (!book) {
+    return sendErrorResponse({ message: "Book not found!", res, status: 404 });
+  }
+
+  const bookCreationTime = book._id.getTimestamp().getTime();
+  if (deleteMethodAddedDate >= bookCreationTime) {
+    return res.json({ success: false });
+  }
+
+  if (book.copySold >= 1) {
+    return res.json({ success: false });
+  }
+
+  await BookModel.findByIdAndDelete(book._id);
+  const author = await AuthorModel.findById(user.authorId);
+  if (author) {
+    author.books = author.books.filter((id) => id.toString() !== bookId);
+    await author.save();
+  }
+
+  const coverId = book.cover?.id;
+  const bookFileId = book.fileInfo.id;
+
+  if (coverId) {
+    const deleteCommand = new DeleteObjectCommand({
+      Bucket: process.env.AWS_PUBLIC_BUCKET,
+      Key: coverId,
+    });
+    await s3Client.send(deleteCommand);
+  }
+
+  if (bookFileId) {
+    const deleteCommand = new DeleteObjectCommand({
+      Bucket: process.env.AWS_PRIVATE_BUCKET,
+      Key: bookFileId,
+    });
+    await s3Client.send(deleteCommand);
+  }
+
+  res.json({ success: true });
+};
