@@ -128,3 +128,192 @@ export const createNewBook: CreateBookRequestHandler = async (req, res) => {
   });
   res.json({ fileUploadUrl, slug: newBook.slug });
 };
+
+export const updateBook: UpdateBookRequestHandler = async (req, res) => {
+  const { body, files, user } = req;
+
+  const {
+    title,
+    description,
+    genre,
+    language,
+    fileInfo,
+    price,
+    publicationName,
+    publishedAt,
+    uploadMethod,
+    slug,
+    status,
+  } = body;
+
+  const { cover, book: newBookFile } = files;
+
+  const book = await BookModel.findOne({
+    slug,
+    author: user.authorId,
+  });
+
+  if (!book) {
+    return sendErrorResponse({
+      message: "Book not found!",
+      status: 404,
+      res,
+    });
+  }
+
+  book.title = title;
+  book.description = description;
+  book.language = language;
+  book.publicationName = publicationName;
+  book.genre = genre;
+  book.publishedAt = publishedAt;
+  book.price = price;
+  book.status = status;
+
+  if (uploadMethod === "local") {
+    if (
+      newBookFile &&
+      !Array.isArray(newBookFile) &&
+      newBookFile.mimetype === "application/epub+zip"
+    ) {
+      // remove old book file (epub) from storage
+      const uploadPath = path.join(__dirname, "../books");
+      const oldFilePath = path.join(uploadPath, book.fileInfo.id);
+
+      if (!fs.existsSync(oldFilePath))
+        return sendErrorResponse({
+          message: "Book file not found!",
+          status: 404,
+          res,
+        });
+
+      fs.unlinkSync(oldFilePath);
+
+      // add new book to the storage
+      const newFileName = slugify(`${book._id} ${book.title}`, {
+        lower: true,
+        replacement: "-",
+      });
+      const newFilePath = path.join(uploadPath, newFileName);
+      const file = fs.readFileSync(newBookFile.filepath);
+      fs.writeFileSync(newFilePath, file);
+
+      book.fileInfo = {
+        id: newFileName,
+        size: formatFileSize(fileInfo?.size || newBookFile.size),
+      };
+    }
+
+    if (cover && !Array.isArray(cover) && cover.mimetype?.startsWith("image")) {
+      // remove old cover file if exists
+      if (book.cover?.id) {
+        await cloudinary.uploader.destroy(book.cover.id);
+      }
+      book.cover = await uploadCoverToCloudinary(cover);
+    }
+  }
+
+  let fileUploadUrl = "";
+  if (uploadMethod === "aws") {
+    if (fileInfo?.type === "application/epub+zip") {
+      // remove the old book from cloud (bucket)
+      const deleteCommand = new DeleteObjectCommand({
+        Bucket: process.env.AWS_PRIVATE_BUCKET,
+        Key: book.fileInfo.id,
+      });
+
+      await s3Client.send(deleteCommand);
+
+      // generate (sign) new url to upload book
+      const fileName = slugify(`${book._id} ${book.title}.epub`, {
+        lower: true,
+        replacement: "-",
+      });
+      fileUploadUrl = await generateFileUploadUrl(s3Client, {
+        bucket: process.env.AWS_PRIVATE_BUCKET!,
+        contentType: fileInfo?.type,
+        uniqueKey: fileName,
+      });
+
+      book.fileInfo = { id: fileName, size: formatFileSize(fileInfo.size) };
+    }
+
+    if (cover && !Array.isArray(cover) && cover.mimetype?.startsWith("image")) {
+      // remove old cover from the cloud (bucket)
+      if (book.cover?.id) {
+        const deleteCommand = new DeleteObjectCommand({
+          Bucket: process.env.AWS_PUBLIC_BUCKET,
+          Key: book.cover.id,
+        });
+        await s3Client.send(deleteCommand);
+      }
+      // upload new cover to the cloud (bucket)
+      const uniqueFileName = slugify(`${book._id} ${book.title}.png`, {
+        lower: true,
+        replacement: "-",
+      });
+
+      book.cover = await uploadBookToAws(cover.filepath, uniqueFileName);
+    }
+  }
+
+  await book.save();
+
+  // we are trying to make our app backward compatible
+  if (!user.books?.includes(book._id.toString())) {
+    await UserModel.findByIdAndUpdate(user.id, {
+      $push: { books: book._id },
+    });
+  }
+
+  res.send(fileUploadUrl);
+};
+
+interface PopulatedBooks {
+  cover?: {
+    url: string;
+    id: string;
+  };
+  _id: ObjectId;
+  author: {
+    _id: ObjectId;
+    name: string;
+    slug: string;
+  };
+  title: string;
+  slug: string;
+}
+
+export const getAllPurchasedBooks: RequestHandler = async (req, res) => {
+  const user = await UserModel.findById(req.user.id).populate<{
+    books: PopulatedBooks[];
+  }>({
+    path: "books",
+    select: "author title cover slug",
+    populate: { path: "author", select: "slug name" },
+  });
+
+  if (!user) return res.json({ books: [] });
+
+  res.json({
+    books: user.books.map((book) => ({
+      id: book._id,
+      title: book.title,
+      cover: book.cover?.url,
+      slug: book.slug,
+      author: {
+        name: book.author.name,
+        slug: book.author.slug,
+        id: book.author._id,
+      },
+    })),
+  });
+};
+
+export const getBooksPublicDetails: RequestHandler = async (req, res) => {
+  const book = await BookModel.findOne({ slug: req.params.slug }).populate<{
+    author: PopulatedBooks["author"];
+  }>({
+    path: "author",
+    select: "name slug",
+  });
