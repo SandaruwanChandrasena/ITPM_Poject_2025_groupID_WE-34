@@ -1,9 +1,3 @@
-// import BookModel from "@/models/book";
-// import ReviewModel from "@/models/review";
-// import { AddReviewRequestHandler } from "@/types";
-// import { sendErrorResponse } from "@/utils/helper";
-// import { RequestHandler } from "express";
-// import { ObjectId, Types, isValidObjectId } from "mongoose";
 import BookModel from "@/models/book";
 import ReviewModel from "@/models/review";
 import { AddReviewRequestHandler } from "@/types";
