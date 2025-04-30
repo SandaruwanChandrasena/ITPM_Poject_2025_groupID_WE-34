@@ -1,0 +1,9 @@
+.bg-pic-home {
+    background-image: url("/public/home.jpg");
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+    height: 100vh;
+    position: relative;
+    
+  }
