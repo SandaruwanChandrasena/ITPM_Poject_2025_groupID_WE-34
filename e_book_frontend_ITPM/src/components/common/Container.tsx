@@ -2,6 +2,8 @@ import { FC, ReactNode } from "react";
 import Navbar from "./Navbar";
 import { useLocation } from "react-router-dom";
 
+//Check out comment
+
 interface Props {
   children: ReactNode;
 }
